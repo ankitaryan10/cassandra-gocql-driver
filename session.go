@@ -815,6 +815,8 @@ type queryMetrics struct {
 	// totalAttempts is total number of attempts.
 	// Equal to sum of all hostMetrics' Attempts.
 	totalAttempts int
+	// totalSpeculativeAttempts is the number of speculativeAttempts executions launched for this query.
+	totalSpeculativeAttempts int
 }
 
 // preFilledQueryMetrics initializes new queryMetrics based on per-host supplied data.
@@ -897,6 +899,21 @@ func (qm *queryMetrics) attempt(addAttempts int, addLatency time.Duration,
 
 	qm.l.Unlock()
 	return totalAttempts, hostMetricsCopy
+}
+
+// returns the number of speculative execution attempts made.
+func (qm *queryMetrics) speculativeAttempts() int {
+	qm.l.RLock()
+	attempts := qm.totalSpeculativeAttempts
+	qm.l.RUnlock()
+	return attempts
+}
+
+// increments the speculative attempts count.
+func (qm *queryMetrics) speculativeAttempt() {
+	qm.l.Lock()
+	qm.totalSpeculativeAttempts++
+	qm.l.Unlock()
 }
 
 // Query represents a CQL statement that can be executed.
@@ -1117,16 +1134,17 @@ func (q *Query) attempt(keyspace string, end, start time.Time, iter *Iter, host 
 
 	if q.observer != nil {
 		q.observer.ObserveQuery(q.Context(), ObservedQuery{
-			Keyspace:  keyspace,
-			Statement: q.stmt,
-			Values:    q.values,
-			Start:     start,
-			End:       end,
-			Rows:      iter.numRows,
-			Host:      host,
-			Metrics:   metricsForHost,
-			Err:       iter.err,
-			Attempt:   attempt,
+			Keyspace:            keyspace,
+			Statement:           q.stmt,
+			Values:              q.values,
+			Start:               start,
+			End:                 end,
+			Rows:                iter.numRows,
+			Host:                host,
+			Metrics:             metricsForHost,
+			Err:                 iter.err,
+			Attempt:             attempt,
+			SpeculativeAttempts: q.metrics.speculativeAttempts(),
 		})
 	}
 }
@@ -2034,7 +2052,7 @@ func createRoutingKey(routingKeyInfo *routingKeyInfo, values []interface{}) ([]b
 
 func (b *Batch) borrowForExecution() {
 	// empty, because Batch has no equivalent of Query.Release()
-	// that would race with speculative executions.
+	// that would race with speculativeAttempts executions.
 }
 
 func (b *Batch) releaseAfterExecution() {
@@ -2203,6 +2221,9 @@ type ObservedQuery struct {
 	// Attempt is the index of attempt at executing this query.
 	// The first attempt is number zero and any retries have non-zero attempt number.
 	Attempt int
+
+	// SpeculativeAttempts is the number of speculativeAttempts execution attempts made
+	SpeculativeAttempts int
 }
 
 // QueryObserver is the interface implemented by query observers / stat collectors.

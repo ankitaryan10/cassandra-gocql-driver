@@ -477,6 +477,17 @@ func (t *testRetryPolicy) GetRetryType(err error) RetryType {
 	return Retry
 }
 
+// speculativeTestObserver is a simple observer for testing speculativeAttempts execution metrics
+type speculativeTestObserver struct {
+	onObserve func(context.Context, ObservedQuery)
+}
+
+func (o *speculativeTestObserver) ObserveQuery(ctx context.Context, q ObservedQuery) {
+	if o.onObserve != nil {
+		o.onObserve(ctx, q)
+	}
+}
+
 func TestSpeculativeExecution(t *testing.T) {
 	log := &testLogger{}
 	defer func() {
@@ -509,8 +520,16 @@ func TestSpeculativeExecution(t *testing.T) {
 	// test Speculative policy with 1 additional execution
 	sp := &SimpleSpeculativeExecution{NumAttempts: 1, TimeoutDelay: 200 * time.Millisecond}
 
+	// Add an observer to capture speculativeAttempts execution metrics
+	var observedSpeculativeAttempts int
+	observer := &speculativeTestObserver{
+		onObserve: func(ctx context.Context, o ObservedQuery) {
+			observedSpeculativeAttempts = o.SpeculativeAttempts
+		},
+	}
+
 	// Build the query
-	qry := db.Query("speculative").RetryPolicy(rt).SetSpeculativeExecutionPolicy(sp).Idempotent(true)
+	qry := db.Query("speculative").RetryPolicy(rt).SetSpeculativeExecutionPolicy(sp).Idempotent(true).Observer(observer)
 
 	// Execute the query and close, check that it doesn't error out
 	if err := qry.Exec(); err != nil {
@@ -534,6 +553,12 @@ func TestSpeculativeExecution(t *testing.T) {
 	// expecting to see 4 (on successful node) + not more than 2 (as cancelled on another node) == 6
 	if requests1+requests2+requests3 > 6 {
 		t.Errorf("error: expected to see 6 attempts, got %v\n", requests1+requests2+requests3)
+	}
+
+	// Verify that the observer captured speculativeAttempts execution attempts
+	// With NumAttempts: 1, we expect 1 speculativeAttempts attempt (in addition to the main execution)
+	if observedSpeculativeAttempts != 1 {
+		t.Errorf("expected observer to capture 1 speculativeAttempts attempt, got %d", observedSpeculativeAttempts)
 	}
 }
 

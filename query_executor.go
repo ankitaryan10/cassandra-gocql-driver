@@ -30,16 +30,6 @@ import (
 	"time"
 )
 
-type contextKey string
-
-const speculativeMetricsKey contextKey = "speculative_metrics"
-
-type SpeculativeMetrics struct {
-	mu               sync.Mutex
-	attemptStarts    map[int]time.Time
-	successLatencies []time.Duration
-}
-
 type ExecutableQuery interface {
 	borrowForExecution()    // Used to ensure that the query stays alive for lifetime of a particular execution goroutine.
 	releaseAfterExecution() // Used when a goroutine finishes its execution attempts, either with ok result or an error.
@@ -77,38 +67,21 @@ func (q *queryExecutor) speculate(ctx context.Context, qry ExecutableQuery, sp S
 	ticker := time.NewTicker(sp.Delay())
 	defer ticker.Stop()
 
-	// Read or create speculative metrics from context
-	var metrics *SpeculativeMetrics
-	speculationStart := time.Now()
-	if metricsVal := ctx.Value(speculativeMetricsKey); metricsVal != nil {
-		metrics = metricsVal.(*SpeculativeMetrics)
-	} else {
-		metrics = &SpeculativeMetrics{
-			attemptStarts:    make(map[int]time.Time),
-			successLatencies: make([]time.Duration, 0),
-		}
-		ctx = context.WithValue(ctx, speculativeMetricsKey, metrics)
-	}
-
 	for i := 0; i < sp.Attempts(); i++ {
 		select {
-		case tickTime := <-ticker.C:
-			// Store ticker time for this speculative attempt
-			metrics.mu.Lock()
-			metrics.attemptStarts[i] = tickTime
-			metrics.mu.Unlock()
-
+		case <-ticker.C:
+			// Increment speculative count in metrics so it's available to the observer
+			switch v := qry.(type) {
+			case *Query:
+				v.metrics.speculativeAttempt()
+			case *Batch:
+				v.metrics.speculativeAttempt()
+			}
 			qry.borrowForExecution() // ensure liveness in case of executing Query to prevent races with Query.Release().
 			go q.run(ctx, qry, hostIter, results)
 		case <-ctx.Done():
 			return &Iter{err: ctx.Err()}
 		case iter := <-results:
-			if iter.err == nil {
-				metrics.mu.Lock()
-				metrics.successLatencies = append(metrics.successLatencies, time.Now().Sub(speculationStart))
-				metrics.mu.Unlock()
-			}
-
 			return iter
 		}
 	}
