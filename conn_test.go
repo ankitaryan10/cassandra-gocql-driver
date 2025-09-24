@@ -477,15 +477,13 @@ func (t *testRetryPolicy) GetRetryType(err error) RetryType {
 	return Retry
 }
 
-// speculativeTestObserver is a simple observer for testing speculativeAttempts execution metrics
+// speculativeTestObserver is a simple observer for testing speculativeExecutions execution metrics
 type speculativeTestObserver struct {
-	onObserve func(context.Context, ObservedQuery)
+	executions int
 }
 
 func (o *speculativeTestObserver) ObserveQuery(ctx context.Context, q ObservedQuery) {
-	if o.onObserve != nil {
-		o.onObserve(ctx, q)
-	}
+	o.executions = q.SpeculativeExecutions
 }
 
 func TestSpeculativeExecution(t *testing.T) {
@@ -520,13 +518,8 @@ func TestSpeculativeExecution(t *testing.T) {
 	// test Speculative policy with 1 additional execution
 	sp := &SimpleSpeculativeExecution{NumAttempts: 1, TimeoutDelay: 200 * time.Millisecond}
 
-	// Add an observer to capture speculativeAttempts execution metrics
-	var observedSpeculativeAttempts int
-	observer := &speculativeTestObserver{
-		onObserve: func(ctx context.Context, o ObservedQuery) {
-			observedSpeculativeAttempts = o.SpeculativeAttempts
-		},
-	}
+	// Add an observer to capture speculativeExecutions execution metrics
+	observer := &speculativeTestObserver{}
 
 	// Build the query
 	qry := db.Query("speculative").RetryPolicy(rt).SetSpeculativeExecutionPolicy(sp).Idempotent(true).Observer(observer)
@@ -555,10 +548,10 @@ func TestSpeculativeExecution(t *testing.T) {
 		t.Errorf("error: expected to see 6 attempts, got %v\n", requests1+requests2+requests3)
 	}
 
-	// Verify that the observer captured speculativeAttempts execution attempts
-	// With NumAttempts: 1, we expect 1 speculativeAttempts attempt (in addition to the main execution)
-	if observedSpeculativeAttempts != 1 {
-		t.Errorf("expected observer to capture 1 speculativeAttempts attempt, got %d", observedSpeculativeAttempts)
+	// Verify that the observer captured speculativeExecutions execution attempts
+	// With NumAttempts: 1, we expect 1 speculativeExecutions attempt (in addition to the main execution)
+	if observer.executions != 1 {
+		t.Errorf("expected observer to capture 1 speculativeExecutions attempt, got %d", observer.executions)
 	}
 }
 
